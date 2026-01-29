@@ -24,8 +24,9 @@ detect_platform() {
 
   # Check for VA-API (Intel/AMD)
   if gst-inspect-1.0 vaapih264enc &>/dev/null; then
-    # Verify VA-API actually works (has a valid device)
-    if vainfo &>/dev/null 2>&1; then
+    # Verify VA-API actually works (has H264 encode support)
+    # Note: vainfo may print X server errors to stderr on headless systems, so check stdout for profiles
+    if vainfo 2>/dev/null | grep -q "VAProfileH264.*VAEntrypointEncSlice"; then
       echo "vaapi"
       return
     fi
@@ -49,7 +50,14 @@ case "$PLATFORM" in
     ;;
   vaapi)
     PLATFORM_DESC="VA-API (Intel/AMD)"
-    MONITOR_CMD="intel_gpu_top"
+    # Detect GPU vendor for appropriate monitor command
+    if lspci 2>/dev/null | grep -qi "vga.*intel"; then
+      MONITOR_CMD="intel_gpu_top"
+    elif lspci 2>/dev/null | grep -qi "vga.*amd\|vga.*radeon"; then
+      MONITOR_CMD="radeontop"
+    else
+      MONITOR_CMD="htop"
+    fi
     ;;
   software)
     PLATFORM_DESC="Software x264 (high CPU)"
