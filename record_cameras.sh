@@ -23,9 +23,8 @@ detect_platform() {
   fi
 
   # Check for VA-API (Intel/AMD)
-  # Enable all drivers to support AMD Mesa (not in GStreamer's default whitelist)
-  export GST_VAAPI_ALL_DRIVERS=1
-  if gst-inspect-1.0 vaapih264enc &>/dev/null; then
+  # Use GST_VAAPI_ALL_DRIVERS=1 to support AMD Mesa (not in GStreamer's default whitelist)
+  if GST_VAAPI_ALL_DRIVERS=1 gst-inspect-1.0 vaapih264enc &>/dev/null; then
     # Verify VA-API actually works (has H264 encode support)
     # Note: vainfo may print X server errors to stderr on headless systems, so check stdout for profiles
     if vainfo 2>/dev/null | grep -q "VAProfileH264.*VAEntrypointEncSlice"; then
@@ -52,6 +51,8 @@ case "$PLATFORM" in
     ;;
   vaapi)
     PLATFORM_DESC="VA-API (Intel/AMD)"
+    # Enable all VA-API drivers (AMD Mesa not in GStreamer's default whitelist)
+    export GST_VAAPI_ALL_DRIVERS=1
     # Detect GPU vendor for appropriate monitor command
     if lspci 2>/dev/null | grep -qi "vga.*intel"; then
       MONITOR_CMD="intel_gpu_top"
