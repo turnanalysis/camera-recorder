@@ -76,7 +76,8 @@ detect_platform() {
   # Prefer FFmpeg software encoding (better quality for fast motion)
   if command -v ffmpeg &>/dev/null; then
     log_debug "FFmpeg found at $(command -v ffmpeg)"
-    if ffmpeg -encoders 2>/dev/null | grep -q "libx264"; then
+    # Use pattern match to avoid pipefail issues with ffmpeg exit code
+    if [[ "$(ffmpeg -encoders 2>/dev/null)" == *libx264* ]]; then
       log_debug "libx264 encoder available in FFmpeg"
       echo "ffmpeg"
       return
@@ -112,7 +113,8 @@ check_encoder_available() {
       ;;
     ffmpeg)
       command -v ffmpeg &>/dev/null || return 1
-      ffmpeg -encoders 2>/dev/null | grep -q "libx264" || return 1
+      # Use subshell to avoid pipefail issues with ffmpeg exit code
+      [[ "$(ffmpeg -encoders 2>/dev/null)" == *libx264* ]] || return 1
       ;;
     software)
       gst-inspect-1.0 x264enc &>/dev/null || return 1
