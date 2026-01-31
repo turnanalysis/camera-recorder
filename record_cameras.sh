@@ -11,12 +11,27 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# =============================================================================
+# Logging with timestamps
+# =============================================================================
+
+log_msg() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+log_debug() {
+  if [[ "${DEBUG:-}" == "1" ]]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DEBUG] $*"
+  fi
+}
+
 # Load local credentials FIRST (needed for ENCODER_PLATFORM override)
 CREDENTIALS_FILE="${SCRIPT_DIR}/credentials.local"
 if [[ -f "$CREDENTIALS_FILE" ]]; then
+  log_msg "Loading credentials from $CREDENTIALS_FILE"
   source "$CREDENTIALS_FILE"
 else
-  echo "ERROR: Missing credentials file: $CREDENTIALS_FILE"
+  log_msg "ERROR: Missing credentials file: $CREDENTIALS_FILE"
   echo ""
   echo "Create it from the template:"
   echo "  cp credentials.template credentials.local"
@@ -29,39 +44,57 @@ fi
 # =============================================================================
 
 detect_platform() {
+  log_debug "Detecting platform..."
+
   # Check for Jetson (NVIDIA Tegra)
   if [[ -f /etc/nv_tegra_release ]] || [[ -d /sys/class/tegra* ]] 2>/dev/null; then
+    log_debug "Detected Jetson/Tegra platform"
     if gst-inspect-1.0 nvv4l2h264enc &>/dev/null; then
+      log_debug "nvv4l2h264enc encoder available"
       echo "jetson"
       return
+    else
+      log_debug "nvv4l2h264enc not available, continuing detection..."
     fi
   fi
 
   # Check for VA-API (Intel/AMD)
   # Use GST_VAAPI_ALL_DRIVERS=1 to support AMD Mesa (not in GStreamer's default whitelist)
   if GST_VAAPI_ALL_DRIVERS=1 gst-inspect-1.0 vaapih264enc &>/dev/null; then
+    log_debug "vaapih264enc plugin found"
     # Verify VA-API actually works (has H264 encode support)
     # Note: vainfo may print X server errors to stderr on headless systems, so check stdout for profiles
     if vainfo 2>/dev/null | grep -q "VAProfileH264.*VAEntrypointEncSlice"; then
+      log_debug "VA-API H264 encode support confirmed"
       echo "vaapi"
       return
+    else
+      log_debug "VA-API H264 encode not available in vainfo"
     fi
   fi
 
   # Prefer FFmpeg software encoding (better quality for fast motion)
   if command -v ffmpeg &>/dev/null; then
+    log_debug "FFmpeg found at $(command -v ffmpeg)"
     if ffmpeg -encoders 2>/dev/null | grep -q "libx264"; then
+      log_debug "libx264 encoder available in FFmpeg"
       echo "ffmpeg"
       return
+    else
+      log_debug "libx264 not available in FFmpeg"
     fi
+  else
+    log_debug "FFmpeg not found"
   fi
 
   # GStreamer software fallback
   if gst-inspect-1.0 x264enc &>/dev/null; then
+    log_debug "GStreamer x264enc available"
     echo "software"
     return
   fi
 
+  log_debug "No encoder found"
   echo "none"
 }
 
@@ -171,7 +204,7 @@ start_one () {
 
   # Check if already running for this camera (check both gst-launch and ffmpeg)
   if pgrep -af "gst-launch|ffmpeg" | grep -F -- "/${name}/" >/dev/null 2>&1; then
-    echo "Already running: ${name}"
+    log_msg "Already running: ${name}"
     return 0
   fi
 
@@ -190,12 +223,13 @@ start_one () {
             ffmpeg)   encoder_desc="FFmpeg libx264 (override)" ;;
             software) encoder_desc="GStreamer x264 (override)" ;;
           esac
+          log_debug "${name}: Using encoder override '${encoder_override}'"
         else
-          echo "  WARNING: Encoder '${encoder_override}' not available for ${name}, falling back to ${PLATFORM_DESC}"
+          log_msg "WARNING: Encoder '${encoder_override}' not available for ${name}, falling back to ${PLATFORM_DESC}"
         fi
         ;;
       *)
-        echo "  WARNING: Invalid encoder '${encoder_override}' for ${name}, using ${PLATFORM_DESC}"
+        log_msg "WARNING: Invalid encoder '${encoder_override}' for ${name}, using ${PLATFORM_DESC}"
         ;;
     esac
   fi
@@ -206,13 +240,16 @@ start_one () {
   [[ $gop_size -lt 1 ]] && gop_size=1  # Minimum 1 frame
   local bitrate_kbps=$((bitrate/1000))
 
-  echo "Starting ${name} (${encoder_desc} @ ${fps}fps, ${bitrate_kbps}kbps)..."
+  log_msg "Starting ${name} (${encoder_desc} @ ${fps}fps, ${bitrate_kbps}kbps, GOP=${gop_size})..."
+  log_debug "${name}: Output dir: ${outdir}"
+  log_debug "${name}: Log file: ${logfile}"
 
   # Generate timestamp for this recording session
   local timestamp=$(date +%Y%m%d_%H%M%S)
 
   # FFmpeg encoder uses a completely different pipeline
   if [[ "$effective_encoder" == "ffmpeg" ]]; then
+    log_debug "${name}: Launching FFmpeg encoder..."
     # FFmpeg with libx264 - best quality for fast motion
     # -preset medium: good balance of quality and speed (slower = better quality)
     # -tune film: optimized for high-quality video content
@@ -222,6 +259,15 @@ start_one () {
     # -bf 0: no B-frames (better for fast motion)
     # -refs 4: more reference frames for better motion prediction
     # -segment_time: split into segments
+
+    # Log the start to the camera log file
+    echo "" >> "$logfile"
+    echo "=== FFmpeg started at $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$logfile"
+    echo "URL: ${url//:*@/:***@}" >> "$logfile"  # Mask password in log
+    echo "Output: ${outdir}/${name}_%Y%m%d_%H%M%S.mkv" >> "$logfile"
+    echo "Settings: crf=18, preset=medium, gop=${gop_size}, maxrate=${bitrate_kbps}k" >> "$logfile"
+    echo "================================================" >> "$logfile"
+
     nohup ffmpeg -hide_banner -y \
       -rtsp_transport tcp \
       -i "${url}" \
@@ -268,6 +314,17 @@ start_one () {
         ;;
     esac
 
+    log_debug "${name}: Launching GStreamer encoder (${effective_encoder})..."
+
+    # Log the start to the camera log file
+    echo "" >> "$logfile"
+    echo "=== GStreamer started at $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$logfile"
+    echo "URL: ${url//:*@/:***@}" >> "$logfile"  # Mask password in log
+    echo "Encoder: ${effective_encoder}" >> "$logfile"
+    echo "Output: ${outdir}/${name}_${timestamp}_%05d.mkv" >> "$logfile"
+    echo "Settings: gop=${gop_size}, bitrate=${bitrate_kbps}kbps" >> "$logfile"
+    echo "==================================================" >> "$logfile"
+
     # splitmuxsink uses %05d for segment number (00000, 00001, etc.)
     # Format: cameraname_YYYYMMDD_HHMMSS_00000.mkv
     nohup gst-launch-1.0 -e \
@@ -281,20 +338,29 @@ start_one () {
   fi
 
   local pid=$!
-  echo "  PID: ${pid}"
-  
+  log_msg "${name}: Started with PID ${pid}"
+
   # Save PID for easier management
   echo "${pid}" > "/tmp/camera_${name}.pid"
+
+  # Brief delay to check if process started successfully
+  sleep 0.5
+  if ! kill -0 "$pid" 2>/dev/null; then
+    log_msg "ERROR: ${name} failed to start (PID ${pid} died immediately)"
+    log_msg "Check log file: ${logfile}"
+    rm -f "/tmp/camera_${name}.pid"
+    return 1
+  fi
 }
 
 stop_one () {
   local name="$1"
   local pidfile="/tmp/camera_${name}.pid"
-  
+
   if [[ -f "$pidfile" ]]; then
     local pid=$(cat "$pidfile")
     if kill -0 "$pid" 2>/dev/null; then
-      echo "Stopping ${name} (PID: ${pid})..."
+      log_msg "Stopping ${name} (PID: ${pid})..."
       kill -INT "$pid" 2>/dev/null || true
       sleep 2
       if kill -0 "$pid" 2>/dev/null; then
@@ -329,7 +395,7 @@ show_status () {
 }
 
 stop_all () {
-  echo "Stopping all camera recordings..."
+  log_msg "Stopping all camera recordings..."
 
   # Graceful shutdown (both gst-launch and ffmpeg)
   pkill -INT -f "gst-launch.*recordings" 2>/dev/null || true
@@ -338,12 +404,14 @@ stop_all () {
 
   # Force if needed
   if pgrep -af "gst-launch.*recordings|ffmpeg.*recordings" >/dev/null 2>&1; then
+    log_msg "Processes still running, sending TERM..."
     pkill -TERM -f "gst-launch.*recordings" 2>/dev/null || true
     pkill -TERM -f "ffmpeg.*recordings" 2>/dev/null || true
     sleep 2
   fi
 
   if pgrep -af "gst-launch.*recordings|ffmpeg.*recordings" >/dev/null 2>&1; then
+    log_msg "Force killing remaining processes..."
     pkill -9 -f "gst-launch.*recordings" 2>/dev/null || true
     pkill -9 -f "ffmpeg.*recordings" 2>/dev/null || true
   fi
@@ -351,15 +419,19 @@ stop_all () {
   # Clean up PID files
   rm -f /tmp/camera_*.pid
 
-  echo "All recordings stopped."
+  log_msg "All recordings stopped."
 }
 
 start_all () {
   # Create output directories
   mkdir -p "$BASE" "$LOGS"
 
+  log_msg "Recording base: ${BASE}"
+  log_msg "Log directory: ${LOGS}"
+  log_msg "Platform: ${PLATFORM_DESC}"
+
   if [[ ! -f "$CONF" ]]; then
-    echo "ERROR: Config file not found: $CONF"
+    log_msg "ERROR: Config file not found: $CONF"
     echo ""
     echo "Create it with format:"
     echo "  name|rtsp_url|fps|bitrate|encoder"
@@ -368,6 +440,8 @@ start_all () {
     echo "If omitted, uses auto-detected encoder (prefers ffmpeg for quality)."
     exit 1
   fi
+
+  log_msg "Loading cameras from: ${CONF}"
 
   # Read config lines: name|url|fps|bitrate|encoder
   while IFS='|' read -r name url fps bitrate encoder; do
@@ -386,8 +460,8 @@ start_all () {
   sleep 2
   show_status
 
-  echo "Monitor with: ${MONITOR_CMD}"
-  echo "Check logs in: ${LOGS}/"
+  log_msg "Monitor with: ${MONITOR_CMD}"
+  log_msg "Check logs in: ${LOGS}/"
 }
 
 # =============================================================================
@@ -397,18 +471,19 @@ start_all () {
 MONITOR_INTERVAL=30  # seconds between health checks
 
 monitor_and_restart() {
-  echo "Starting daemon mode - monitoring recordings..."
+  log_msg "Starting daemon mode - monitoring recordings..."
+  log_msg "Monitor interval: ${MONITOR_INTERVAL}s"
   echo "Press Ctrl+C to stop"
-  
+
   # Trap SIGTERM/SIGINT for graceful shutdown
-  trap 'echo "Shutting down..."; stop_all; exit 0' SIGTERM SIGINT
-  
+  trap 'log_msg "Shutting down..."; stop_all; exit 0' SIGTERM SIGINT
+
   # Initial start
   start_all
-  
+
   while true; do
     sleep "$MONITOR_INTERVAL"
-    
+
     # Check each camera from config
     while IFS='|' read -r name url fps bitrate encoder; do
       [[ -z "${name// }" ]] && continue
@@ -424,12 +499,12 @@ monitor_and_restart() {
       if [[ -f "$pidfile" ]]; then
         local pid=$(cat "$pidfile")
         if ! kill -0 "$pid" 2>/dev/null; then
-          echo "[$(date '+%Y-%m-%d %H:%M:%S')] ${name} died (PID ${pid}), restarting..."
+          log_msg "${name} died (PID ${pid}), restarting..."
           rm -f "$pidfile"
           needs_restart=true
         fi
       else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ${name} not running, starting..."
+        log_msg "${name} not running, starting..."
         needs_restart=true
       fi
 
@@ -478,6 +553,9 @@ case "${1:-start}" in
     echo "  jetson   - NVIDIA Jetson hardware encoding"
     echo "  vaapi    - Intel/AMD hardware encoding"
     echo "  software - GStreamer x264 (fallback)"
+    echo ""
+    echo "Debug mode: DEBUG=1 $0 start"
+    echo "  Shows detailed platform detection and encoder selection"
     ;;
   *)
     echo "Usage: $0 {start|stop|restart|status|daemon|info}"
