@@ -5,6 +5,7 @@ set -euo pipefail
 # Camera Recording with Hardware Encoding
 # Supports both Reolink and Axis cameras
 # Auto-detects platform: Jetson (NVENC), x86 (VA-API/QSV), or software fallback
+# Per-camera encoder override supported via 5th field in cameras.conf
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,6 +54,28 @@ detect_platform() {
   fi
 
   echo "none"
+}
+
+# Check if a specific encoder is available
+check_encoder_available() {
+  local encoder="$1"
+  case "$encoder" in
+    jetson)
+      [[ -f /etc/nv_tegra_release ]] || [[ -d /sys/class/tegra* ]] 2>/dev/null || return 1
+      gst-inspect-1.0 nvv4l2h264enc &>/dev/null || return 1
+      ;;
+    vaapi)
+      GST_VAAPI_ALL_DRIVERS=1 gst-inspect-1.0 vaapih264enc &>/dev/null || return 1
+      vainfo 2>/dev/null | grep -q "VAProfileH264.*VAEntrypointEncSlice" || return 1
+      ;;
+    software)
+      gst-inspect-1.0 x264enc &>/dev/null || return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  return 0
 }
 
 PLATFORM="${ENCODER_PLATFORM:-$(detect_platform)}"
@@ -119,6 +142,7 @@ start_one () {
   local url_template="$2"
   local fps="${3:-30}"
   local bitrate="${4:-$DEFAULT_BITRATE}"
+  local encoder_override="${5:-}"
 
   # Expand credentials in URL
   local url
@@ -128,25 +152,49 @@ start_one () {
   mkdir -p "$outdir"
 
   local logfile="${LOGS}/${name}.log"
-  
+
   # Check if already running for this camera
   if pgrep -af "gst-launch" | grep -F -- "/${name}/" >/dev/null 2>&1; then
     echo "Already running: ${name}"
     return 0
   fi
 
+  # Determine effective encoder: use override if valid, otherwise use platform default
+  local effective_encoder="$PLATFORM"
+  local encoder_desc="$PLATFORM_DESC"
+
+  if [[ -n "$encoder_override" ]]; then
+    case "$encoder_override" in
+      jetson|vaapi|software)
+        if check_encoder_available "$encoder_override"; then
+          effective_encoder="$encoder_override"
+          case "$encoder_override" in
+            jetson)   encoder_desc="Jetson NVENC (override)" ;;
+            vaapi)    encoder_desc="VA-API (override)" ;;
+            software) encoder_desc="Software x264 (override)" ;;
+          esac
+        else
+          echo "  WARNING: Encoder '${encoder_override}' not available for ${name}, falling back to ${PLATFORM_DESC}"
+        fi
+        ;;
+      *)
+        echo "  WARNING: Invalid encoder '${encoder_override}' for ${name}, using ${PLATFORM_DESC}"
+        ;;
+    esac
+  fi
+
   # Calculate GOP size (1 second of frames)
   local gop_size="${fps}"
   local bitrate_kbps=$((bitrate/1000))
 
-  echo "Starting ${name} (${PLATFORM_DESC} @ ${fps}fps, ${bitrate_kbps}kbps)..."
+  echo "Starting ${name} (${encoder_desc} @ ${fps}fps, ${bitrate_kbps}kbps)..."
 
   # Generate timestamp for this recording session
   local timestamp=$(date +%Y%m%d_%H%M%S)
 
-  # Build platform-specific encode pipeline
+  # Build encoder-specific encode pipeline
   local encode_pipeline
-  case "$PLATFORM" in
+  case "$effective_encoder" in
     jetson)
       # NVIDIA Jetson hardware encoding
       encode_pipeline="nvv4l2decoder ! nvv4l2h264enc bitrate=${bitrate} iframeinterval=${gop_size}"
@@ -249,12 +297,15 @@ start_all () {
     echo "ERROR: Config file not found: $CONF"
     echo ""
     echo "Create it with format:"
-    echo "  name|rtsp_url|fps|bitrate"
+    echo "  name|rtsp_url|fps|bitrate|encoder"
+    echo ""
+    echo "The encoder field is optional (jetson, vaapi, software)."
+    echo "If omitted, uses auto-detected platform encoder."
     exit 1
   fi
 
-  # Read config lines: name|url|fps|bitrate
-  while IFS='|' read -r name url fps bitrate; do
+  # Read config lines: name|url|fps|bitrate|encoder
+  while IFS='|' read -r name url fps bitrate encoder; do
     # Skip empty lines and comments
     [[ -z "${name// }" ]] && continue
     [[ "$name" =~ ^# ]] && continue
@@ -264,7 +315,7 @@ start_all () {
     fps="${fps:-30}"
     bitrate="${bitrate:-$DEFAULT_BITRATE}"
 
-    start_one "$name" "$url" "$fps" "$bitrate"
+    start_one "$name" "$url" "$fps" "$bitrate" "$encoder"
   done < "$CONF"
 
   sleep 2
@@ -294,17 +345,17 @@ monitor_and_restart() {
     sleep "$MONITOR_INTERVAL"
     
     # Check each camera from config
-    while IFS='|' read -r name url fps bitrate; do
+    while IFS='|' read -r name url fps bitrate encoder; do
       [[ -z "${name// }" ]] && continue
       [[ "$name" =~ ^# ]] && continue
       [[ -z "${url// }" ]] && continue
-      
+
       fps="${fps:-30}"
       bitrate="${bitrate:-$DEFAULT_BITRATE}"
-      
+
       local pidfile="/tmp/camera_${name}.pid"
       local needs_restart=false
-      
+
       if [[ -f "$pidfile" ]]; then
         local pid=$(cat "$pidfile")
         if ! kill -0 "$pid" 2>/dev/null; then
@@ -316,9 +367,9 @@ monitor_and_restart() {
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ${name} not running, starting..."
         needs_restart=true
       fi
-      
+
       if [[ "$needs_restart" == "true" ]]; then
-        start_one "$name" "$url" "$fps" "$bitrate"
+        start_one "$name" "$url" "$fps" "$bitrate" "$encoder"
       fi
     done < "$CONF"
   done
@@ -351,7 +402,11 @@ case "${1:-start}" in
     echo "Encoder:  ${PLATFORM}"
     echo "Monitor:  ${MONITOR_CMD}"
     echo ""
-    echo "Override with: ENCODER_PLATFORM=jetson|vaapi|software $0 start"
+    echo "Global override: ENCODER_PLATFORM=jetson|vaapi|software $0 start"
+    echo ""
+    echo "Per-camera override: Add 5th field to cameras.conf"
+    echo "  Format: name|url|fps|bitrate|encoder"
+    echo "  Valid encoders: jetson, vaapi, software"
     ;;
   *)
     echo "Usage: $0 {start|stop|restart|status|daemon|info}"
@@ -361,7 +416,11 @@ case "${1:-start}" in
     echo "  restart - Stop then start all recordings"
     echo "  status  - Show running recordings"
     echo "  daemon  - Run in foreground, monitor and auto-restart crashed recordings"
-    echo "  info    - Show detected platform and encoder"
+    echo "  info    - Show detected platform and encoder info"
+    echo ""
+    echo "Config format: name|rtsp_url|fps|bitrate|encoder"
+    echo "  The encoder field is optional (jetson, vaapi, software)."
+    echo "  If omitted, uses auto-detected platform encoder."
     exit 1
     ;;
 esac
