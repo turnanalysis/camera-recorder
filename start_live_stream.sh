@@ -42,6 +42,10 @@ ADAPTIVE_CHECK_INTERVAL=60  # seconds between bandwidth checks
 ADAPTIVE_DROP_THRESHOLD=70  # % of target bitrate that triggers downgrade
 ADAPTIVE_RAISE_THRESHOLD=120 # % of target bitrate that allows upgrade
 
+# Live status check - only stream when enabled on skiframes.com
+LIVE_CONFIG_URL="https://media.skiframes.com/config/live-banner.json"
+LIVE_CHECK_INTERVAL=60  # seconds between live status checks
+
 # Bandwidth test server (uses Cloudflare's speed test)
 SPEEDTEST_UPLOAD_URL="https://speed.cloudflare.com/__up"
 SPEEDTEST_SIZE=1000000  # 1MB test file (reduced for lower data usage)
@@ -57,6 +61,51 @@ NC='\033[0m'
 
 # Log file for adaptive mode
 LOG_FILE="/tmp/flyingyankee_stream.log"
+
+# =============================================================================
+# LIVE STATUS CHECK
+# =============================================================================
+
+check_live_enabled() {
+    # Check if live streaming is enabled on skiframes.com
+    # Returns 0 (true) if enabled, 1 (false) if disabled
+    local config
+    config=$(curl -s --max-time 10 "${LIVE_CONFIG_URL}?t=$(date +%s)" 2>/dev/null)
+
+    if [[ -z "$config" ]]; then
+        echo -e "${RED}Could not fetch live config - assuming disabled${NC}" >&2
+        return 1
+    fi
+
+    # Parse JSON to check enabled field
+    local enabled
+    enabled=$(echo "$config" | grep -o '"enabled"[[:space:]]*:[[:space:]]*true' | head -1)
+
+    if [[ -n "$enabled" ]]; then
+        return 0  # Live is enabled
+    else
+        return 1  # Live is disabled
+    fi
+}
+
+wait_for_live_enabled() {
+    # Wait until live streaming is enabled, checking every LIVE_CHECK_INTERVAL seconds
+    echo -e "${YELLOW}Live streaming is disabled on skiframes.com${NC}"
+    echo -e "${YELLOW}Waiting for live to be enabled (checking every ${LIVE_CHECK_INTERVAL}s)...${NC}"
+    echo ""
+
+    while true; do
+        if check_live_enabled; then
+            echo ""
+            echo -e "${GREEN}✓ Live streaming is now ENABLED!${NC}"
+            return 0
+        fi
+
+        local timestamp=$(date '+%H:%M:%S')
+        echo -e "${BLUE}[$timestamp]${NC} Live still disabled, waiting..."
+        sleep "$LIVE_CHECK_INTERVAL"
+    done
+}
 
 # =============================================================================
 # CAMERA AUTO-DETECTION
@@ -296,78 +345,105 @@ adaptive_stream() {
     echo -e "${CYAN}║         ADAPTIVE STREAMING MODE                            ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    
-    # Initial bandwidth test
-    echo -e "${YELLOW}Running initial bandwidth test to determine starting quality...${NC}"
-    local initial_speed=$(run_bandwidth_test 2000000 true)
-    
-    # Determine starting quality
-    local current_preset="medium"
-    if (( initial_speed >= 6000 )); then
-        current_preset="high"
-    elif (( initial_speed >= 2500 )); then
-        current_preset="medium"
-    else
-        current_preset="low"
-    fi
-    
-    echo -e "${GREEN}Initial bandwidth: ${initial_speed} Kbps${NC}"
-    echo -e "${GREEN}Starting with: ${current_preset}${NC}"
-    echo ""
-    
+
     # Create control pipe for communication
     local control_pipe="/tmp/stream_control_$$"
     mkfifo "$control_pipe" 2>/dev/null
-    
+
     # Trap to cleanup on exit
     trap "rm -f $control_pipe; kill 0 2>/dev/null" EXIT
-    
+
+    # Outer loop - handles live enable/disable cycling
     while true; do
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${BOLD}Starting stream at ${CYAN}${current_preset}${NC} quality${NC}"
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        
-        # Set quality preset
-        set_quality_preset "$current_preset"
-        
-        # Build RTSP URL
-        local rtsp_url="rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_IP}:554/${STREAM_PATH}"
-        
-        # Start ffmpeg in background
-        ffmpeg -rtsp_transport tcp \
-            -fflags +genpts+igndts \
-            -use_wallclock_as_timestamps 1 \
-            -i "$rtsp_url" \
-            -f lavfi -i anullsrc=channel_layout=mono:sample_rate=48000 \
-            -c:v libx264 -preset $PRESET \
-            -profile:v $PROFILE -level $LEVEL \
-            -pix_fmt yuv420p \
-            -x264-params "keyint=${KEYINT}:min-keyint=${KEYINT}" \
-            -b:v $VIDEO_BITRATE -maxrate $MAX_BITRATE -bufsize $BUFFER_SIZE \
-            -vsync cfr \
-            -r $FRAME_RATE \
-            $SCALE \
-            -c:a aac -b:a $AUDIO_BITRATE \
-            -map 0:v:0 -map 1:a:0 \
-            -shortest \
-            -f flv \
-            "$RTMP_URL" 2>&1 &
-        
-        local ffmpeg_pid=$!
-        echo -e "${GREEN}Stream started (PID: $ffmpeg_pid)${NC}"
+        # Check if live is enabled before starting
+        if ! check_live_enabled; then
+            wait_for_live_enabled
+        fi
+
+        echo -e "${GREEN}Live is enabled - starting stream...${NC}"
         echo ""
-        
-        # Monitor loop
-        local check_count=0
-        local consecutive_low=0
-        local consecutive_high=0
-        
-        while kill -0 $ffmpeg_pid 2>/dev/null; do
-            sleep $ADAPTIVE_CHECK_INTERVAL
-            ((check_count++))
-            
-            # Quick bandwidth check
-            local current_speed=$(quick_bandwidth_check)
+
+        # Initial bandwidth test
+        echo -e "${YELLOW}Running initial bandwidth test to determine starting quality...${NC}"
+        local initial_speed=$(run_bandwidth_test 2000000 true)
+
+        # Determine starting quality
+        local current_preset="medium"
+        if (( initial_speed >= 6000 )); then
+            current_preset="high"
+        elif (( initial_speed >= 2500 )); then
+            current_preset="medium"
+        else
+            current_preset="low"
+        fi
+
+        echo -e "${GREEN}Initial bandwidth: ${initial_speed} Kbps${NC}"
+        echo -e "${GREEN}Starting with: ${current_preset}${NC}"
+        echo ""
+
+        local live_disabled=false
+
+        # Quality adaptation loop
+        while [[ "$live_disabled" == "false" ]]; do
+            echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${BOLD}Starting stream at ${CYAN}${current_preset}${NC} quality${NC}"
+            echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+            # Set quality preset
+            set_quality_preset "$current_preset"
+
+            # Build RTSP URL
+            local rtsp_url="rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_IP}:554/${STREAM_PATH}"
+
+            # Start ffmpeg in background
+            ffmpeg -rtsp_transport tcp \
+                -fflags +genpts+igndts \
+                -use_wallclock_as_timestamps 1 \
+                -i "$rtsp_url" \
+                -f lavfi -i anullsrc=channel_layout=mono:sample_rate=48000 \
+                -c:v libx264 -preset $PRESET \
+                -profile:v $PROFILE -level $LEVEL \
+                -pix_fmt yuv420p \
+                -x264-params "keyint=${KEYINT}:min-keyint=${KEYINT}" \
+                -b:v $VIDEO_BITRATE -maxrate $MAX_BITRATE -bufsize $BUFFER_SIZE \
+                -vsync cfr \
+                -r $FRAME_RATE \
+                $SCALE \
+                -c:a aac -b:a $AUDIO_BITRATE \
+                -map 0:v:0 -map 1:a:0 \
+                -shortest \
+                -f flv \
+                "$RTMP_URL" 2>&1 &
+
+            local ffmpeg_pid=$!
+            echo -e "${GREEN}Stream started (PID: $ffmpeg_pid)${NC}"
+            echo ""
+
+            # Monitor loop
+            local check_count=0
+            local consecutive_low=0
+            local consecutive_high=0
+
+            while kill -0 $ffmpeg_pid 2>/dev/null; do
+                sleep $ADAPTIVE_CHECK_INTERVAL
+                ((check_count++))
+
+                # Check if live is still enabled
+                if ! check_live_enabled; then
+                    echo ""
+                    echo -e "${RED}⚠ Live streaming DISABLED on skiframes.com${NC}"
+                    echo -e "${YELLOW}Stopping stream to save data...${NC}"
+
+                    # Kill current stream
+                    kill $ffmpeg_pid 2>/dev/null
+                    wait $ffmpeg_pid 2>/dev/null
+
+                    live_disabled=true
+                    break  # Break monitor loop
+                fi
+
+                # Quick bandwidth check
+                local current_speed=$(quick_bandwidth_check)
             local target_speed=${PRESET_BITRATE[$current_preset]}
             local ratio=0
             
@@ -433,18 +509,22 @@ adaptive_stream() {
                 consecutive_high=0
             fi
         done
-        
-        # Check if ffmpeg exited on its own (error)
-        if ! kill -0 $ffmpeg_pid 2>/dev/null; then
-            wait $ffmpeg_pid
-            local exit_code=$?
-            if (( exit_code != 0 )); then
-                echo -e "${RED}Stream crashed (exit code: $exit_code)${NC}"
-                echo -e "${YELLOW}Restarting in 5 seconds...${NC}"
-                sleep 5
+
+            # Check if ffmpeg exited on its own (error) - skip if live was disabled
+            if [[ "$live_disabled" == "false" ]] && ! kill -0 $ffmpeg_pid 2>/dev/null; then
+                wait $ffmpeg_pid
+                local exit_code=$?
+                if (( exit_code != 0 )); then
+                    echo -e "${RED}Stream crashed (exit code: $exit_code)${NC}"
+                    echo -e "${YELLOW}Restarting in 5 seconds...${NC}"
+                    sleep 5
+                fi
             fi
-        fi
-    done
+        done  # End quality adaptation loop
+
+        # If we get here because live was disabled, loop back to check live status
+        echo ""
+    done  # End outer live check loop
 }
 
 # =============================================================================
