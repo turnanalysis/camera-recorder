@@ -464,7 +464,7 @@ adaptive_stream() {
     mkfifo "$control_pipe" 2>/dev/null
 
     # Trap to cleanup on exit
-    trap "rm -f $control_pipe; kill 0 2>/dev/null" EXIT
+    trap "rm -f $control_pipe /tmp/ffmpeg_progress_$$.log; kill 0 2>/dev/null" EXIT
 
     # Outer loop - handles live enable/disable cycling
     while true; do
@@ -542,9 +542,18 @@ adaptive_stream() {
                 echo -e "  Right: ${split_right_camera} → ${right_url%%@*}@..."
                 echo -e "  Filter: ${filter:0:80}..."
 
-                ffmpeg -rtsp_transport tcp -fflags +genpts+igndts -use_wallclock_as_timestamps 1 \
+                ffmpeg \
+                    -rtsp_transport tcp \
+                    -analyzeduration 10000000 -probesize 32M -max_delay 5000000 \
+                    -err_detect ignore_err \
+                    -fflags +genpts+igndts+discardcorrupt \
+                    -use_wallclock_as_timestamps 1 \
                     -i "$left_url" \
-                    -rtsp_transport tcp -fflags +genpts+igndts -use_wallclock_as_timestamps 1 \
+                    -rtsp_transport tcp \
+                    -analyzeduration 10000000 -probesize 32M -max_delay 5000000 \
+                    -err_detect ignore_err \
+                    -fflags +genpts+igndts+discardcorrupt \
+                    -use_wallclock_as_timestamps 1 \
                     -i "$right_url" \
                     -f lavfi -i anullsrc=channel_layout=mono:sample_rate=48000 \
                     -filter_complex "$filter" \
@@ -559,6 +568,7 @@ adaptive_stream() {
                     -c:a aac -b:a $AUDIO_BITRATE \
                     -shortest \
                     -f flv \
+                    -progress /tmp/ffmpeg_progress_$$.log \
                     "$RTMP_URL" 2>&1 &
             else
                 # SINGLE CAMERA
@@ -581,6 +591,7 @@ adaptive_stream() {
                     -c:a aac -b:a $AUDIO_BITRATE \
                     -map 0:v:0 -map 1:a:0 \
                     -shortest \
+                    -progress /tmp/ffmpeg_progress_$$.log \
                     -f flv \
                     "$RTMP_URL" 2>&1 &
             fi
@@ -594,6 +605,9 @@ adaptive_stream() {
             local consecutive_low=0
             local consecutive_high=0
             local config_check_counter=0
+            local last_frame_count=0
+            local stall_count=0
+            local ffmpeg_log="/tmp/ffmpeg_stream_$$.log"
 
             while kill -0 $ffmpeg_pid 2>/dev/null; do
                 sleep $ADAPTIVE_CHECK_INTERVAL
@@ -642,6 +656,32 @@ adaptive_stream() {
 
                         sleep 2
                         break  # Restart with new config
+                    fi
+                fi
+
+                # Watchdog: detect stalled/black frame output
+                local progress_file="/tmp/ffmpeg_progress_$$.log"
+                if [[ -f "$progress_file" ]]; then
+                    local current_frame=$(grep -oP 'frame=\K\d+' "$progress_file" 2>/dev/null | tail -1)
+                    if [[ -n "$current_frame" ]]; then
+                        if (( current_frame == last_frame_count )); then
+                            ((stall_count++))
+                            if (( stall_count >= 2 )); then
+                                echo ""
+                                echo -e "${RED}⚠ WATCHDOG: Frame output stalled at frame ${current_frame} for ${stall_count} checks${NC}"
+                                echo -e "${YELLOW}Restarting ffmpeg to recover...${NC}"
+                                kill $ffmpeg_pid 2>/dev/null
+                                wait $ffmpeg_pid 2>/dev/null
+                                rm -f "$progress_file"
+                                stall_count=0
+                                last_frame_count=0
+                                sleep 3
+                                break
+                            fi
+                        else
+                            stall_count=0
+                            last_frame_count=$current_frame
+                        fi
                     fi
                 fi
 
