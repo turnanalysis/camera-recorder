@@ -542,24 +542,22 @@ adaptive_stream() {
                 echo -e "  Right: ${split_right_camera} → ${right_url%%@*}@..."
                 echo -e "  Filter: ${filter:0:80}..."
 
-                # Use UDP transport to avoid TCP interleaving CSeq errors
-                # with dual 4K Reolink streams. Buffer sizes increased for 4K.
-                # Each input gets large reorder queue and socket buffers.
+                # Dual 4K RTSP: R2 is H.264, R3 is H.265 (HEVC)
+                # Need long analyzeduration/probesize for correct codec detection
+                # thread_queue_size=512 prevents queue blocking on 4K decode
                 ffmpeg \
-                    -rtsp_transport udp \
-                    -buffer_size 4194304 \
-                    -max_delay 5000000 \
-                    -reorder_queue_size 4096 \
+                    -rtsp_transport tcp \
+                    -thread_queue_size 512 \
                     -analyzeduration 10000000 -probesize 32M \
                     -fflags +genpts+igndts+discardcorrupt \
+                    -use_wallclock_as_timestamps 1 \
                     -err_detect ignore_err \
                     -i "$left_url" \
-                    -rtsp_transport udp \
-                    -buffer_size 4194304 \
-                    -max_delay 5000000 \
-                    -reorder_queue_size 4096 \
+                    -rtsp_transport tcp \
+                    -thread_queue_size 512 \
                     -analyzeduration 10000000 -probesize 32M \
                     -fflags +genpts+igndts+discardcorrupt \
+                    -use_wallclock_as_timestamps 1 \
                     -err_detect ignore_err \
                     -i "$right_url" \
                     -f lavfi -i anullsrc=channel_layout=mono:sample_rate=48000 \
