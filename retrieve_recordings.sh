@@ -8,8 +8,8 @@ set -euo pipefail
 # Supports Reolink (R1, R2, R3) via HTTP API and Axis via VAPIX API.
 #
 # Files are saved locally and automatically uploaded to the 4t server:
-#   Local:   /Users/paul2/j40/data/sd_data/<camera>/
-#   Remote:  4t:/home/pa91/data/recordings/<camera>/
+#   Local:   /Volumes/OWC_48/data/recordings/sd_<camera>/
+#   Remote:  4t:/home/pa91/data/recordings/sd_<camera>/
 #
 # Usage:
 #   ./retrieve_recordings.sh <camera> <start> <end> [output_dir]
@@ -33,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOWNLOAD_TIMEOUT="${DOWNLOAD_TIMEOUT:-300}"
 
 # Local base directory for SD card data
-LOCAL_BASE="/Users/paul2/j40/data/sd_data"
+LOCAL_BASE="/Volumes/OWC_48/data/recordings"
 
 # Remote server for upload (ssh alias "4t")
 REMOTE_HOST="4t"
@@ -285,17 +285,22 @@ if [[ "${1:-}" == "upload" ]]; then
   echo ""
 
   if [[ -n "$UPLOAD_TARGET" ]]; then
-    upload_dir_to_server "${LOCAL_BASE}/${UPLOAD_TARGET}" "${REMOTE_BASE}/${UPLOAD_TARGET}" "$UPLOAD_TARGET"
+    # Support both "R1" and "sd_R1" as upload target
+    local target_dir="$UPLOAD_TARGET"
+    if [[ ! "$target_dir" =~ ^sd_ ]]; then
+      target_dir="sd_${target_dir}"
+    fi
+    upload_dir_to_server "${LOCAL_BASE}/${target_dir}" "${REMOTE_BASE}/${target_dir}" "$target_dir"
   else
     found=0
-    for cam_dir in "${LOCAL_BASE}"/*/; do
+    for cam_dir in "${LOCAL_BASE}"/sd_*/; do
       [[ -d "$cam_dir" ]] || continue
       cam=$(basename "$cam_dir")
       upload_dir_to_server "${LOCAL_BASE}/${cam}" "${REMOTE_BASE}/${cam}" "$cam"
       found=$((found + 1))
     done
     if [[ $found -eq 0 ]]; then
-      log_err "No camera directories found in ${LOCAL_BASE}"
+      log_err "No sd_* camera directories found in ${LOCAL_BASE}"
       exit 1
     fi
   fi
@@ -357,11 +362,11 @@ usage() {
   echo "  camera      Camera name: R1, R2, R3, or Axis (case-insensitive)"
   echo "  start_time  Start time: \"YYYY-MM-DD HH:MM\" or \"YYYY-MM-DD HH:MM:SS\""
   echo "  end_time    End time:   \"YYYY-MM-DD HH:MM\" or \"YYYY-MM-DD HH:MM:SS\""
-  echo "  output_dir  Output directory (default: ${LOCAL_BASE}/<camera>)"
+  echo "  output_dir  Output directory (default: ${LOCAL_BASE}/sd_<camera>)"
   echo ""
   echo "Files are saved locally and uploaded to the 4t server automatically."
-  echo "  Local:   ${LOCAL_BASE}/<camera>/"
-  echo "  Remote:  ${REMOTE_HOST}:${REMOTE_BASE}/<camera>/"
+  echo "  Local:   ${LOCAL_BASE}/sd_<camera>/"
+  echo "  Remote:  ${REMOTE_HOST}:${REMOTE_BASE}/sd_<camera>/"
   echo ""
   echo "Commands:"
   echo "  $0 upload              Upload ALL cameras to 4t"
@@ -452,13 +457,13 @@ else
   DURATION_STR="${DURATION_MIN}m"
 fi
 
-# Default output directory: /Users/paul2/j40/data/sd_data/<camera>/
+# Default output directory: /Volumes/OWC_48/data/recordings/sd_<camera>/
 if [[ -z "$OUTPUT_DIR" ]]; then
-  OUTPUT_DIR="${LOCAL_BASE}/${CAMERA_INPUT}"
+  OUTPUT_DIR="${LOCAL_BASE}/sd_${CAMERA_INPUT}"
 fi
 
-# Remote directory: /home/pa91/data/recordings/<camera>/
-REMOTE_DIR="${REMOTE_BASE}/${CAMERA_INPUT}"
+# Remote directory: /home/pa91/data/recordings/sd_<camera>/
+REMOTE_DIR="${REMOTE_BASE}/sd_${CAMERA_INPUT}"
 
 mkdir -p "$OUTPUT_DIR"
 
