@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "course_name": "Example GS Course",
+  "camera": {
+    "ip": "192.168.0.100",
+    "stream_profile": "h264-60fps",
+    "frame_width": 1920,
+    "frame_height": 1080
+  },
+  "model": {
+    "path": "yolov8n.engine",
+    "confidence": 0.45,
+    "imgsz": 640
+  },
+  "gates": [
+    {
+      "id": 1,
+      "name": "Start",
+      "pan": 45.0,
+      "tilt": -10.0,
+      "zoom": 3000,
+      "trigger_zone": {
+        "enabled": true,
+        "bbox_pct": [0.3, 0.2, 0.7, 0.8],
+        "direction": "exit"
+      }
+    },
+    {
+      "id": 2,
+      "name": "Gate 2",
+      "pan": 40.0,
+      "tilt": -8.0,
+      "zoom": 2800,
+      "trigger_zone": null
+    },
+    {
+      "id": 3,
+      "name": "Gate 3",
+      "pan": 33.0,
+      "tilt": -5.0,
+      "zoom": 2500,
+      "trigger_zone": null
+    },
+    {
+      "id": 4,
+      "name": "Gate 4",
+      "pan": 25.0,
+      "tilt": -3.0,
+      "zoom": 2300,
+      "trigger_zone": null
+    },
+    {
+      "id": 5,
+      "name": "Gate 5",
+      "pan": 15.0,
+      "tilt": -1.0,
+      "zoom": 2200,
+      "trigger_zone": null
+    },
+    {
+      "id": 6,
+      "name": "Gate 6",
+      "pan": 5.0,
+      "tilt": 0.0,
+      "zoom": 2100,
+      "trigger_zone": null
+    },
+    {
+      "id": 7,
+      "name": "Gate 7",
+      "pan": -5.0,
+      "tilt": 1.0,
+      "zoom": 2000,
+      "trigger_zone": null
+    },
+    {
+      "id": 8,
+      "name": "Gate 8",
+      "pan": -15.0,
+      "tilt": 2.0,
+      "zoom": 1900,
+      "trigger_zone": null
+    },
+    {
+      "id": 9,
+      "name": "Gate 9",
+      "pan": -22.0,
+      "tilt": 3.0,
+      "zoom": 1900,
+      "trigger_zone": null
+    },
+    {
+      "id": 10,
+      "name": "Finish",
+      "pan": -30.0,
+      "tilt": 5.0,
+      "zoom": 2000,
+      "trigger_zone": null
+    }
+  ],
+  "tracking": {
+    "gates_ahead": 2,
+    "zoom_margin": 1.2,
+    "pan_dead_zone_pct": 0.05,
+    "tilt_dead_zone_pct": 0.08,
+    "max_pan_speed": 70,
+    "max_tilt_speed": 40,
+    "ptz_update_hz": 15,
+    "smoothing_factor": 0.3,
+    "gate_advance_threshold_pct": 0.15,
+    "lost_racer_timeout_s": 3.0,
+    "anticipation_factor": 0.2,
+    "racer_frame_position": 0.4
+  },
+  "digital_stabilization": {
+    "enabled": true,
+    "overscan_pct": 0.15,
+    "smoothing_alpha": 0.25,
+    "racer_frame_position": 0.4
+  },
+  "output": {
+    "rtmp_url": null,
+    "record_path": null,
+    "debug_display": true
+  }
+}
