@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "course_name": "Occlusion Test",
+  "camera": {
+    "ip": "127.0.0.1",
+    "stream_profile": "test",
+    "frame_width": 1920,
+    "frame_height": 1080
+  },
+  "model": {
+    "path": "yolov8n.pt",
+    "confidence": 0.40,
+    "imgsz": 640
+  },
+  "gates": [
+    {
+      "id": 1,
+      "name": "Start",
+      "pan": 0.0,
+      "tilt": 0.0,
+      "zoom": 1000,
+      "trigger_zone": {
+        "enabled": false,
+        "bbox_pct": [0.3, 0.2, 0.7, 0.8],
+        "direction": "exit"
+      }
+    },
+    {
+      "id": 2,
+      "name": "Finish",
+      "pan": 0.0,
+      "tilt": 0.0,
+      "zoom": 1000,
+      "trigger_zone": null
+    }
+  ],
+  "tracking": {
+    "gates_ahead": 1,
+    "zoom_margin": 1.0,
+    "pan_dead_zone_pct": 0.05,
+    "tilt_dead_zone_pct": 0.08,
+    "max_pan_speed": 70,
+    "max_tilt_speed": 40,
+    "ptz_update_hz": 15,
+    "smoothing_factor": 0.3,
+    "gate_advance_threshold_pct": 0.15,
+    "lost_racer_timeout_s": 3.0,
+    "anticipation_factor": 0.2,
+    "racer_frame_position": 0.4
+  },
+  "occlusion": {
+    "confirm_frames": 3,
+    "reacquire_window_s": 2.5,
+    "sam_reacquire_after_s": 1.5
+  },
+  "digital_stabilization": {
+    "enabled": false,
+    "overscan_pct": 0.15,
+    "smoothing_alpha": 0.25,
+    "racer_frame_position": 0.4
+  },
+  "output": {
+    "rtmp_url": null,
+    "record_path": null,
+    "debug_display": true
+  }
+}
