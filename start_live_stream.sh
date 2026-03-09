@@ -258,8 +258,9 @@ build_pip_filter() {
     local pip_size=$2
 
     # Output is 1920x1080, PIP size as percentage
-    local pip_width=$((1920 * pip_size / 100))
-    local pip_height=$((1080 * pip_size / 100))
+    # Ensure dimensions are even (required for h264)
+    local pip_width=$(( (1920 * pip_size / 100) / 2 * 2 ))
+    local pip_height=$(( (1080 * pip_size / 100) / 2 * 2 ))
     local margin=20
 
     # Calculate overlay position
@@ -283,10 +284,10 @@ build_pip_filter() {
             ;;
     esac
 
-    # Filter: scale main to 1920x1080, scale PIP to size, overlay
+    # Filter: scale main to 1920x1080, scale PIP to exact size (no aspect ratio preservation to avoid rounding issues)
     local filter=""
     filter+="[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[main];"
-    filter+="[1:v]scale=${pip_width}:${pip_height}:force_original_aspect_ratio=decrease,pad=${pip_width}:${pip_height}:(ow-iw)/2:(oh-ih)/2,setsar=1[pip];"
+    filter+="[1:v]scale=${pip_width}:${pip_height}:flags=bicubic,setsar=1[pip];"
     filter+="[main][pip]overlay=${x_pos}:${y_pos}[out]"
 
     echo "$filter"
