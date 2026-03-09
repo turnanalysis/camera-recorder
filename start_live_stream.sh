@@ -175,7 +175,7 @@ fetch_stream_config() {
     config=$(curl -s --max-time 10 "${STREAM_CONFIG_URL}?t=$(date +%s)" 2>/dev/null)
 
     if [[ -z "$config" || "$config" == *"NoSuchKey"* || "$config" == *"AccessDenied"* ]]; then
-        echo "single|R1|||||||||"
+        echo "single|R1||||||||||true"
         return
     fi
 
@@ -189,10 +189,11 @@ try:
     l = s.get('left') or {}
     r = s.get('right') or {}
     p = c.get('pip') or {}
-    print(f\"{m}|{cam}|{l.get('camera','')}|{l.get('crop','')}|{l.get('label','')}|{r.get('camera','')}|{r.get('crop','')}|{r.get('label','')}|{p.get('camera','')}|{p.get('position','bottom-right')}|{p.get('size',25)}\")
+    audio = 'true' if c.get('audioEnabled', True) else 'false'
+    print(f\"{m}|{cam}|{l.get('camera','')}|{l.get('crop','')}|{l.get('label','')}|{r.get('camera','')}|{r.get('crop','')}|{r.get('label','')}|{p.get('camera','')}|{p.get('position','bottom-right')}|{p.get('size',25)}|{audio}\")
 except:
-    print('single|R1|||||||||')
-" 2>/dev/null || echo "single|R1|||||||||"
+    print('single|R1||||||||||true')
+" 2>/dev/null || echo "single|R1||||||||||true"
 }
 
 # Check if stream config has changed (returns 0 if changed)
@@ -565,6 +566,7 @@ adaptive_stream() {
         local pip_camera=$(echo "$stream_config" | cut -d'|' -f9)
         local pip_position=$(echo "$stream_config" | cut -d'|' -f10)
         local pip_size=$(echo "$stream_config" | cut -d'|' -f11)
+        local audio_enabled=$(echo "$stream_config" | cut -d'|' -f12)
 
         if [[ "$stream_mode" == "split" ]]; then
             echo -e "${CYAN}Stream mode: SPLIT VIEW${NC}"
@@ -580,6 +582,11 @@ adaptive_stream() {
             if [[ -n "$stream_camera" && "$stream_camera" != "R1" ]]; then
                 echo -e "  Using camera from config: ${stream_camera}"
             fi
+        fi
+        if [[ "$audio_enabled" == "true" ]]; then
+            echo -e "  Audio: ${GREEN}ON${NC} (from camera)"
+        else
+            echo -e "  Audio: ${YELLOW}OFF${NC} (muted)"
         fi
         echo ""
 
@@ -667,36 +674,70 @@ adaptive_stream() {
                 echo -e "  PIP:  ${pip_camera} → ${pip_url%%@*}@..."
                 echo -e "  Filter: ${filter:0:80}..."
 
-                ffmpeg \
-                    -rtsp_transport tcp \
-                    -thread_queue_size 512 \
-                    -analyzeduration 10000000 -probesize 32M \
-                    -fflags +genpts+igndts+discardcorrupt \
-                    -use_wallclock_as_timestamps 1 \
-                    -err_detect ignore_err \
-                    -i "$main_url" \
-                    -rtsp_transport tcp \
-                    -thread_queue_size 512 \
-                    -analyzeduration 10000000 -probesize 32M \
-                    -fflags +genpts+igndts+discardcorrupt \
-                    -use_wallclock_as_timestamps 1 \
-                    -err_detect ignore_err \
-                    -i "$pip_url" \
-                    -f lavfi -i anullsrc=channel_layout=mono:sample_rate=48000 \
-                    -filter_complex "$filter" \
-                    -map "[out]" -map 2:a:0 \
-                    -c:v libx264 -preset $PRESET \
-                    -profile:v $PROFILE -level $LEVEL \
-                    -pix_fmt yuv420p \
-                    -x264-params "keyint=${KEYINT}:min-keyint=${KEYINT}" \
-                    -b:v $VIDEO_BITRATE -maxrate $MAX_BITRATE -bufsize $BUFFER_SIZE \
-                    -vsync cfr \
-                    -r $FRAME_RATE \
-                    -c:a aac -b:a $AUDIO_BITRATE \
-                    -shortest \
-                    -progress /tmp/ffmpeg_progress_$$.log \
-                    -f flv \
-                    "$RTMP_URL" 2>&1 &
+                if [[ "$audio_enabled" == "true" ]]; then
+                    # Real audio from main camera
+                    ffmpeg \
+                        -rtsp_transport tcp \
+                        -thread_queue_size 512 \
+                        -analyzeduration 10000000 -probesize 32M \
+                        -fflags +genpts+igndts+discardcorrupt \
+                        -use_wallclock_as_timestamps 1 \
+                        -err_detect ignore_err \
+                        -i "$main_url" \
+                        -rtsp_transport tcp \
+                        -thread_queue_size 512 \
+                        -analyzeduration 10000000 -probesize 32M \
+                        -fflags +genpts+igndts+discardcorrupt \
+                        -use_wallclock_as_timestamps 1 \
+                        -err_detect ignore_err \
+                        -i "$pip_url" \
+                        -filter_complex "$filter" \
+                        -map "[out]" -map 0:a:0 \
+                        -c:v libx264 -preset $PRESET \
+                        -profile:v $PROFILE -level $LEVEL \
+                        -pix_fmt yuv420p \
+                        -x264-params "keyint=${KEYINT}:min-keyint=${KEYINT}" \
+                        -b:v $VIDEO_BITRATE -maxrate $MAX_BITRATE -bufsize $BUFFER_SIZE \
+                        -vsync cfr \
+                        -r $FRAME_RATE \
+                        -c:a aac -ar 48000 -b:a $AUDIO_BITRATE \
+                        -shortest \
+                        -progress /tmp/ffmpeg_progress_$$.log \
+                        -f flv \
+                        "$RTMP_URL" 2>&1 &
+                else
+                    # Silent audio
+                    ffmpeg \
+                        -rtsp_transport tcp \
+                        -thread_queue_size 512 \
+                        -analyzeduration 10000000 -probesize 32M \
+                        -fflags +genpts+igndts+discardcorrupt \
+                        -use_wallclock_as_timestamps 1 \
+                        -err_detect ignore_err \
+                        -i "$main_url" \
+                        -rtsp_transport tcp \
+                        -thread_queue_size 512 \
+                        -analyzeduration 10000000 -probesize 32M \
+                        -fflags +genpts+igndts+discardcorrupt \
+                        -use_wallclock_as_timestamps 1 \
+                        -err_detect ignore_err \
+                        -i "$pip_url" \
+                        -f lavfi -i anullsrc=channel_layout=mono:sample_rate=48000 \
+                        -filter_complex "$filter" \
+                        -map "[out]" -map 2:a:0 \
+                        -c:v libx264 -preset $PRESET \
+                        -profile:v $PROFILE -level $LEVEL \
+                        -pix_fmt yuv420p \
+                        -x264-params "keyint=${KEYINT}:min-keyint=${KEYINT}" \
+                        -b:v $VIDEO_BITRATE -maxrate $MAX_BITRATE -bufsize $BUFFER_SIZE \
+                        -vsync cfr \
+                        -r $FRAME_RATE \
+                        -c:a aac -b:a $AUDIO_BITRATE \
+                        -shortest \
+                        -progress /tmp/ffmpeg_progress_$$.log \
+                        -f flv \
+                        "$RTMP_URL" 2>&1 &
+                fi
             else
                 # SINGLE CAMERA
                 local rtsp_url=$(get_camera_rtsp_url "$stream_camera" "$STREAM_PATH")
@@ -775,6 +816,7 @@ adaptive_stream() {
                         pip_camera=$(echo "$stream_config" | cut -d'|' -f9)
                         pip_position=$(echo "$stream_config" | cut -d'|' -f10)
                         pip_size=$(echo "$stream_config" | cut -d'|' -f11)
+                        audio_enabled=$(echo "$stream_config" | cut -d'|' -f12)
 
                         if [[ "$stream_mode" == "split" ]]; then
                             echo -e "  New: SPLIT ${split_left_camera} + ${split_right_camera}"
@@ -783,6 +825,7 @@ adaptive_stream() {
                         else
                             echo -e "  New: SINGLE ${stream_camera}"
                         fi
+                        echo -e "  Audio: ${audio_enabled}"
 
                         sleep 2
                         break  # Restart with new config
